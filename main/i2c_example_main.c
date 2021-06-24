@@ -50,6 +50,7 @@ static const char *TAG = "i2c-example";
 
 SemaphoreHandle_t print_mux = NULL;
 
+
 /**
  * @brief test code to read esp-i2c-slave
  *        We need to fill the buffer of esp slave device, then master can read them out.
@@ -188,6 +189,129 @@ static void disp_buf(uint8_t *buf, int len)
     printf("\n");
 }
 
+void i2c_master_send(void *param_p)
+{
+    uint8_t *dataSend = (uint8_t*)malloc(DATA_LENGTH);
+    static uint32_t task_idx;
+    int cnt = 0,    
+        retr;
+    int i;
+
+    bool sendCntSts = false;
+
+    static int addr1 =1,
+               addr2 = 1;
+    while(1)
+    {
+        printf("I2C_Master_Send Excuting: %d \n", ++task_idx);
+        ESP_LOGI(TAG, "TASK[%d] test cnt: %d", task_idx, cnt++);
+    
+        if(sendCntSts == false)
+        {
+            for(i = 0; i < 10; i++)
+            {
+                dataSend[i] = i + addr1;
+            }
+            for(int indx = i; indx < DATA_LENGTH; indx++)
+            {
+                dataSend[indx] = 0;
+            }   
+            addr1++;
+
+            retr = i2c_master_write_slave(I2C_MASTER_NUM, dataSend, RW_TEST_LENGTH);
+            if(retr == ESP_OK)
+            {
+                printf("Data write sucess ... \n");
+                printf("\n**************************\n");
+                printf("----------------------------\n");
+                printf("Master write to slave \n");
+                disp_buf(dataSend, RW_TEST_LENGTH);
+                printf("----------------------------\n");
+            }
+        }
+
+        if(sendCntSts == true)
+        {
+            for(i = 0; i < 5; i++)
+            {
+                dataSend[i] = i + addr2;
+            }
+            for(int indx = i; indx < DATA_LENGTH; indx++)
+            {
+                dataSend[indx] = 0;
+            }   
+            addr2++;    
+
+            retr = i2c_master_write_slave(I2C_MASTER_NUM, dataSend, RW_TEST_LENGTH);
+            if(retr == ESP_OK)
+            {
+                printf("Data write sucess ... \n");
+                printf("\n**************************\n");
+                printf("----------------------------\n");
+                printf("Master write to slave \n");
+                disp_buf(dataSend, RW_TEST_LENGTH);
+                printf("----------------------------\n");
+            }
+        }
+        sendCntSts = !sendCntSts;
+        vTaskDelay(10000 / portTICK_RATE_MS);
+
+    }
+    free(dataSend);
+    dataSend = NULL;
+}
+
+QueueHandle_t i2cRxQEvtHndl;
+
+void i2c_read_data(void *param_p)
+{
+    uint8_t *dataRec = (uint8_t*)malloc(DATA_LENGTH);
+
+    //can check the size > 0  and check with ID and then allocate to further process
+    int dataRecSize = 0;
+    printf("i2c_read_data task started ... \n");
+    while(1)
+    {
+        dataRecSize = i2c_slave_read_buffer(I2C_SLAVE_NUM, dataRec, RW_TEST_LENGTH, portMAX_DELAY);
+        //dataRecSize = i2c_slave_read_buffer(I2C_SLAVE_NUM, &i2cRxQEvtHndl, RW_TEST_LENGTH, portMAX_DELAY);
+        if(dataRecSize > 1) 
+        {
+            printf("dataRec size : %d \n", dataRecSize);
+            for(int indx = 0; indx < 10; indx ++)
+            {
+                printf("data: %02x \n", dataRec[indx]);
+            }
+            xQueueSend(i2cRxQEvtHndl, &dataRec, (TickType_t)1);
+            dataRecSize = 0;
+            //printf("");
+        }
+    }
+    free(dataRec);
+    dataRec = NULL;
+}
+
+
+static void i2c_read_dataProcess(void *param_p)
+{
+    uint8_t *dataRecQueue = (uint8_t*)malloc(DATA_LENGTH);
+    while(1)
+    {
+        if (xQueueReceive(i2cRxQEvtHndl, (void * )&dataRecQueue, (portTickType)portMAX_DELAY))
+        {
+            printf("QueueHandle_t Received ... \n");
+            for(int indx = 0; indx < 10; indx ++)
+            {
+                printf("dataQue: %02x \n", dataRecQueue[indx]);
+            }
+            printf("DataQueue Received Completly ...\n");   
+        }
+    }
+
+    free(dataRecQueue);
+    dataRecQueue = NULL;
+}
+
+
 static void i2c_test_task(void *arg)
 {
     static int adc1, adc2;
@@ -271,6 +395,7 @@ static void i2c_test_task(void *arg)
         xSemaphoreTake(print_mux, portMAX_DELAY);
         //we need to fill the slave buffer so that master can read later
         ret = i2c_master_write_slave(I2C_MASTER_NUM, data_wr, RW_TEST_LENGTH);
+        vTaskDelay(10000 / portTICK_RATE_MS);
         if (ret == ESP_OK) {
             size = i2c_slave_read_buffer(I2C_SLAVE_NUM, data, RW_TEST_LENGTH, 1000 / portTICK_RATE_MS);
         }
@@ -300,6 +425,17 @@ void app_main(void)
     print_mux = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(i2c_slave_init());
     ESP_ERROR_CHECK(i2c_master_init());
-    xTaskCreate(i2c_test_task, "i2c_test_task_0", 1024 * 2, (void *)0, 10, NULL);
-    xTaskCreate(i2c_test_task, "i2c_test_task_1", 1024 * 2, (void *)1, 10, NULL);
+    //xTaskCreate(i2c_test_task, "i2c_test_task_0", 1024 * 2, (void *)0, 10, NULL);
+    //xTaskCreate(i2c_test_task, "i2c_test_task_1", 1024 * 2, (void *)1, 10, NULL);
+
+    i2cRxQEvtHndl = xQueueCreate(10, sizeof(2*RW_TEST_LENGTH));
+    if(i2cRxQEvtHndl == NULL)
+    {
+        printf("Error Creating i2cRxQEvtHndl !!! \n");
+    }
+
+    xTaskCreate(i2c_master_send, "i2c_master_send_task", 2048*2, (void*)1, 10, NULL);
+    xTaskCreate(i2c_read_data, "i2c_read_data_task", 2048*2, (void*)1, 10, NULL);
+    xTaskCreate(i2c_read_dataProcess, "i2c_read_dataProcess_task", 10000, (void*)1, 10, NULL);
+
 }
